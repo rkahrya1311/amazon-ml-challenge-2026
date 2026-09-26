@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import json
 import os
 import tempfile
@@ -72,11 +73,13 @@ def clean_input_files(
             raise FileNotFoundError(f"Required input file not found: {source_path}")
 
         cleaned_path = cleaned_dir / file_name
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         with source_path.open("rb") as source, cleaned_path.open(
             "w", encoding="utf-8", newline=""
         ) as destination:
-            for line in source:
-                destination.write(line.decode("utf-8", errors="replace"))
+            while chunk := source.read(8 * 1024 * 1024):
+                destination.write(decoder.decode(chunk))
+            destination.write(decoder.decode(b"", final=True))
         cleaned_paths[file_name] = cleaned_path
 
     return cleaned_paths

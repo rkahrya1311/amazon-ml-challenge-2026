@@ -41,11 +41,17 @@ python -m pip install -r requirements.txt
 python src/blocking.py --data-dir ./train --output ./experiments/candidate_pairs.csv
 ```
 
-For Google Colab, first mount Drive and upload the four training files to `/content/cleaned_training_data`. Then run:
+For training data, the folder must contain the three `train_source*.tsv` files and `train_ground_truth.tsv`. For Google Colab, install the requirements and run:
 
 ```bash
 !pip -q install -r requirements.txt
 !python src/blocking.py --data-dir /content/cleaned_training_data --output /content/drive/MyDrive/AmazonML/experiments/candidate_pairs.csv
+```
+
+For test data, provide `test_source1.tsv`, `test_source2.tsv`, and `test_source3.tsv` in the data folder. Test data has no ground truth, so candidate recall is reported as unavailable. Run:
+
+```bash
+!python src/blocking.py --split test --data-dir /content/test_data --output /content/drive/MyDrive/AmazonML/experiments/test_candidate_pairs.csv
 ```
 
 Add `--overwrite` to replace an existing output. Use `--maximum-records-per-key N` to explicitly change the default cutoff of 100. The command prints source and country counts, per-rule counts, combined counts, deduplication, candidate distribution, recall, file size, sample rows, and validation results. The candidate CSV is ignored by Git and should be stored in Google Drive, not committed.

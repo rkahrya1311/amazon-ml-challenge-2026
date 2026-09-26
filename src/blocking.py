@@ -19,6 +19,11 @@ SOURCE_FILES = {
     "S3": "train_source3.tsv",
 }
 GROUND_TRUTH_FILE = "train_ground_truth.tsv"
+TEST_SOURCE_FILES = {
+    "S1": "test_source1.tsv",
+    "S2": "test_source2.tsv",
+    "S3": "test_source3.tsv",
+}
 
 NAME_STOP_WORDS = {
     "inc", "incorporated", "corp", "corporation", "llc", "ltd",
@@ -47,11 +52,18 @@ def read_tsv_sql(path: Path) -> str:
     )
 
 
-def clean_input_files(data_dir: Path, temporary_dir: Path) -> dict[str, Path]:
+def clean_input_files(
+    data_dir: Path,
+    temporary_dir: Path,
+    source_files: dict[str, str],
+    ground_truth_file: str | None,
+) -> dict[str, Path]:
     """Copy input lines to UTF-8, replacing malformed bytes without dropping rows."""
     cleaned_dir = temporary_dir / "cleaned_inputs"
     cleaned_dir.mkdir(parents=True, exist_ok=True)
-    required_names = [*SOURCE_FILES.values(), GROUND_TRUTH_FILE]
+    required_names = list(source_files.values())
+    if ground_truth_file is not None:
+        required_names.append(ground_truth_file)
     cleaned_paths: dict[str, Path] = {}
 
     for file_name in required_names:
@@ -83,8 +95,12 @@ def normalized_text_sql(column_name: str) -> str:
     )
 
 
-def create_source_views(connection: duckdb.DuckDBPyConnection, paths: dict[str, Path]) -> None:
-    for source, file_name in SOURCE_FILES.items():
+def create_source_views(
+    connection: duckdb.DuckDBPyConnection,
+    paths: dict[str, Path],
+    source_files: dict[str, str],
+) -> None:
+    for source, file_name in source_files.items():
         view_name = f"training_{source.lower()}"
         connection.execute(
             f"CREATE OR REPLACE VIEW {view_name} AS "
@@ -424,13 +440,13 @@ def validate_and_export(
         "total_true_match_pairs": ground_truth_pair_count,
         "pair_level_candidate_recall": (
             retained_true_pair_count / ground_truth_pair_count
-            if ground_truth_pair_count else 0.0
+            if ground_truth_pair_count else None
         ),
         "s1_entities_with_true_matches": ground_truth_s1_count,
         "s1_entities_with_at_least_one_retained_true_match": retained_true_s1_count,
         "entity_level_candidate_recall": (
             retained_true_s1_count / ground_truth_s1_count
-            if ground_truth_s1_count else 0.0
+            if ground_truth_s1_count else None
         ),
         "csv_rows_read_by_pandas": pandas_row_count,
         "csv_file": str(output_path.resolve()),
@@ -446,8 +462,11 @@ def run_blocking_experiment(
     maximum_records_per_key: int = 100,
     memory_limit: str = "8GB",
     overwrite: bool = False,
+    split: str = "train",
 ) -> dict[str, Any]:
-    """Run B1, B2, and B3, combine candidates, validate, and export."""
+    """Run B1, B2, and B3 against training or test sources and export."""
+    if split not in {"train", "test"}:
+        raise ValueError("Split must be either 'train' or 'test'.")
     if maximum_records_per_key < 1:
         raise ValueError("The maximum records per blocking key must be positive.")
     if output_path.exists() and not overwrite:
@@ -458,7 +477,11 @@ def run_blocking_experiment(
     data_dir = data_dir.resolve()
     output_path = output_path.resolve()
     temporary_dir = Path(tempfile.mkdtemp(prefix="blocking-work-"))
-    cleaned_paths = clean_input_files(data_dir, temporary_dir)
+    source_files = SOURCE_FILES if split == "train" else TEST_SOURCE_FILES
+    ground_truth_file = GROUND_TRUTH_FILE if split == "train" else None
+    cleaned_paths = clean_input_files(
+        data_dir, temporary_dir, source_files, ground_truth_file
+    )
     connection = duckdb.connect()
     connection.execute("SET threads = 4")
     connection.execute(f"SET memory_limit = '{memory_limit}'")
@@ -467,9 +490,17 @@ def run_blocking_experiment(
     )
 
     try:
-        create_source_views(connection, cleaned_paths)
+        create_source_views(connection, cleaned_paths, source_files)
         create_target_tables(connection)
-        create_ground_truth(connection, cleaned_paths[GROUND_TRUTH_FILE])
+        if ground_truth_file is not None:
+            create_ground_truth(connection, cleaned_paths[ground_truth_file])
+        else:
+            connection.execute("""
+                CREATE OR REPLACE TEMP TABLE ground_truth (
+                    s1_id VARCHAR,
+                    matched_id VARCHAR
+                )
+            """)
 
         country_rows = []
         for source in ("S1", "S2", "S3"):
@@ -501,6 +532,8 @@ def run_blocking_experiment(
             for row in country_rows
         ]
         result["maximum_records_per_blocking_key"] = maximum_records_per_key
+        result["data_split"] = split
+        result["recall_available"] = ground_truth_file is not None
         result["rule_candidate_counts"] = per_rule_counts
         return result
     finally:
@@ -515,7 +548,13 @@ def main() -> None:
         "--data-dir",
         type=Path,
         required=True,
-        help="Folder containing the three training source files and ground truth.",
+        help="Folder containing the source files for the selected split.",
+    )
+    parser.add_argument(
+        "--split",
+        choices=("train", "test"),
+        default="train",
+        help="Use train_* files with ground truth, or test_* files without labels.",
     )
     parser.add_argument(
         "--output",
@@ -547,6 +586,7 @@ def main() -> None:
         maximum_records_per_key=arguments.maximum_records_per_key,
         memory_limit=arguments.memory_limit,
         overwrite=arguments.overwrite,
+        split=arguments.split,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
